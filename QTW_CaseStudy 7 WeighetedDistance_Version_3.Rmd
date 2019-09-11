@@ -1,0 +1,901 @@
+---
+title: "Real-Time Location System Case Study"
+author: "Eduardo Cantu Medellin, Samantha Sprague, Solange Garcia de Alford"
+date: "August 28, 2019"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Description
+The floor plan has 6 fixed access points. The recordings of the signal strenght was done in steps of 45 degrees, a total of 8 recordings per sample. There were 110 samples recorded accross the floor.
+# Raw Data
+## Loading Data
+```{r LoadingData}
+#Read the entire document into a string carachter vector rawTxt
+rawTxt <- readLines("Data/offline.final.trace.txt")
+```
+Total number of lines in the text: `r length(rawTxt)`  
+Number of lines starting with the '#' symbol: `r sum(substr(rawTxt,1,1) == "#")`
+## Procesing Raw Data
+```{r dataProc1}
+# Splits the line by ';'
+strsplit(rawTxt[4],";")[[1]]
+```
+```{r dataProc2}
+# Splits the line by ';' , '=', ',' and store it in a character vector token
+tokens=strsplit(rawTxt[4],"[;=,]")[[1]] 
+tokens[1:10]
+```
+Extract values from the tokens, not the field names
+```{r dataProc3}
+#Extract Data
+tokens[c(2,4,6:8,10)]
+```
+Extract what is left of the tokens data
+```{r dataProc4}
+#Extract Data
+tokens[-(1:10)]
+```
+Create a matrix with the data then column bind
+```{r dataProc5}
+tmpMat= matrix(tokens[-(1:10)], ncol=4, byrow = TRUE)
+matrix_rec = cbind(matrix(tokens[c(2,4,6:8,10)],nrow=nrow(tmpMat),ncol=6, byrow=TRUE),tmpMat)
+matrix_rec
+```
+Matrix dimensions `r dim(matrix_rec)`
+```{r lineProcessFunction}
+processLine = function(x){
+  tokens=strsplit(x,"[;=,]")[[1]]
+  if (length(tokens) == 10)
+    return(NULL)
+  tmpMat= matrix(tokens[-(1:10)], ncol=4, byrow = TRUE)
+  cbind(matrix(tokens[c(2,4,6:8,10)],nrow=nrow(tmpMat),ncol=6, byrow=TRUE),tmpMat)
+}
+```
+Apply the function for the first 16 lines
+```{r applyFunction}
+tmpRestult = lapply(rawTxt[4:20], processLine)
+sapply(tmpRestult,nrow)
+```
+Bind all the matrices on tmpResult
+```{r BindMatrix}
+
+offlineData <- as.data.frame(do.call("rbind",tmpRestult))
+#offlineData
+```
+```{r processAllData}
+# Get the number of lines that do not start with '#'
+options(error = recover, warn=2)
+linesToProcess <- rawTxt[ substr(rawTxt,1,1) != "#"]
+tmpRestult = lapply(linesToProcess, processLine)
+#Append final data
+offlineData <- as.data.frame(do.call("rbind",tmpRestult))
+
+head(offlineData)
+```
+Total number of measurments: `r dim(offlineData)`
+## Cleaning the Data
+```{r dataCleaning}
+#Name the columns of the dataset
+names(offlineData) <- c("time","scanMac","posX","posY","posZ","orientation"
+                        ,"mac","signal", "channel","type")
+head(offlineData)
+```
+```{r setVariablesType}
+# set the variable types
+numericVar <- c("time", "posX","posY","posZ","orientation","signal")
+offlineData[,numericVar] <- as.data.frame(apply(offlineData[,numericVar],2, as.numeric))
+head(offlineData)
+#unique(offlineData$mac)
+```
+The analysis will only use data from the "access points", therefore all records that are not coming from an access point will be deleted.
+```{r deleteNonAccessPointRec}
+#Keep only the access points records
+offlineData <- offlineData[offlineData$type == "3",]
+#remove the 'type' field from the dataset after removing all non access points records
+offlineData <- offlineData[, "type" != names(offlineData)]
+head(offlineData)
+```
+New dimension after removing the column and non-access-point records: `r dim(offlineData)`
+Time variable. To use the POSIXt format we need to use the time in seconds not milliseconds. Convert the time variable to seconds by dividing by 1000 the milliseconds.
+```{r timeFormat}
+offlineData$rawTime <-  offlineData$time
+offlineData$time <- offlineData$rawTime / 1000
+class(offlineData$time) = c("POSIXt", "POSIXct")
+summary(offlineData[,numericVar])
+```
+```{r summaryForFactors}
+offlineData$mac <- as.character(offlineData$mac)
+summary(offlineData[,c("mac","channel","scanMac")])
+summary(offlineData[,c("mac","channel")])
+```
+There are two fields where their infomration is the same accross all the rows or observations. These fields 'posZ' and 'scanMac' can be removed from the data set
+```{r removeCol}
+# keep the fields with information
+offlineData <- offlineData[, !(names(offlineData) %in% c("scanMac","posZ"))]
+head(offlineData)
+```
+### Orientation Field
+The dataset should only contain 8 values for orientation, i.e., 0,45,90,..,315
+```{r orientationCheck}
+length(unique(offlineData$orientation))
+plot(ecdf(offlineData$orientation), ylab="Empirical CDF", xlab="Orientation", main="")
+```
+```{r orientationFunction}
+roundOrientation <- function(angles){
+  refs = seq(0, by = 45, length = 9)
+  q = sapply(angles, function(o) which.min(abs(o-refs)))
+  c(refs[1:8],0)[q]
+}
+```
+```{r addAngles}
+#add the angles field by using the function
+offlineData$angle <- roundOrientation(offlineData$orientation)
+```
+```{r chartAngles}
+with(offlineData,boxplot(orientation ~ angle,
+                         xlab= "nearest 45 degree angle",
+                         ylab= "orientation"))
+```
+### MAC Addresses
+```{r macAddressNumbers}
+c(length(unique(offlineData$mac)), length(unique(offlineData$channel)))
+sort(table(offlineData$mac), decreasing = TRUE)
+offlineData[offlineData$mac == "02:42:1c:4e:b5:c0",]
+```
+```{r keepTopSevenMacs}
+subMacs <-  names(sort(table(offlineData$mac), decreasing=TRUE))[1:7]
+subMacs
+offlineData <- offlineData[offlineData$mac %in% subMacs,]
+unique(offlineData$mac)
+table(offlineData$mac)
+#offlineData[offlineData$mac %in% subMacs,]
+#head(offlineData)
+#c(length(unique(offlineData$mac)), length(unique(offlineData$channel)))
+```
+## Exploring Hand held position
+```{r handHeldExploration}
+locDF <- with(offlineData,
+              by (offlineData, list(posX,posY), function(x) x))
+length(locDF)
+#empty combinations of (x,y)
+sum(sapply(locDF,is.null))
+```
+```{r dropNullCombinations}
+locDF <- locDF[ !sapply(locDF, is.null)]
+length(locDF)
+locDF[[5]]
+```
+```{r locCounts}
+#number of observations per location
+locCounts <- sapply(locDF, nrow)
+#or we can do this instead
+locCounts <- sapply(locDF, 
+                    function(df)
+                      c(df[1,c("posX","posY")], count = nrow(df)))
+class(locCounts)
+dim(locCounts)
+locCounts[,1:15]
+```
+```{r plotCounts}
+locCounts = t(locCounts)
+plot(locCounts, type = "n", xlab="",ylab="")
+text(locCounts, labels = locCounts[,3], cex = .8, srt = 45)
+```
+## Signal Strength
+```{r pltoSignalS}
+
+library(lattice)
+
+bwplot(signal ~ factor(angle) | mac , data = offlineData,
+       subset = posX == 2 & posY == 12
+       & mac != "00:0f:a3:39:dd:cd",
+       layout = c(2,3))
+
+```
+```{r densityPlots}
+
+
+densityplot( ~ signal | mac + factor(angle), data = offlineData,
+subset = posX == 24 & posY == 4 &
+mac != "00:0f:a3:39:dd:cd",
+bw = 0.5, plot.points = FALSE)
+
+
+
+```
+```{r}
+
+
+
+offlineData$posXY <- paste (offlineData$posX,offlineData$posY, sep = "-")
+
+byLocAngleAp <-  with(offlineData,
+                      by(offlineData,list(posXY,angle,mac),
+                         function(x) x))
+
+signalSummary = lapply(byLocAngleAp,
+                       function(oneLoc){
+                         ans = oneLoc[1,]
+                         ans$medSignal = median(oneLoc$signal)
+                         ans$avgSignal = mean(oneLoc$signal)
+                         ans$num = length(oneLoc$signal)
+                         ans$sdSignal = sd(oneLoc$signal)
+                         ans$iqrSignal = IQR(oneLoc$signal)
+                         ans
+                       })
+
+offlineSummary = do.call("rbind",signalSummary)
+
+
+breaks = seq(-90, -30, by = 5)
+
+head(offlineData$posXY)
+head(byLocAngleAp)
+
+#bwplot(sdSignal ~ cut(avgSignal, breaks = breaks),
+#data = offlineSummary,
+#subset = mac != "00:0f:a3:39:e1:c0",
+#xlab = "Mean Signal", ylab = "SD Signal")
+```
+## Relation between Signal and Distance
+```{r examineAndTestDistance}
+#Get one AP and one angle 
+
+
+
+oneAPAngle <- subset(offlineSummary, mac==subMacs[5] & angle ==  0)
+
+library(fields)
+smoothSS <- Tps(oneAPAngle[,c("posX","posY")], oneAPAngle$avgSignal)
+vizSmooth <- predictSurface(smoothSS)
+plot.surface(vizSmooth,type = "C", main=subMacs[5])
+points(oneAPAngle$posX, oneAPAngle$posY, pch=19, cex = 0.5)
+
+
+
+```
+Wraping the previous code into a surfaceSS function
+```{r surfaceSSFunction}
+surfaceSS = function (m, a, d){
+  oneAPAngle <- subset(d, mac == m & angle == a)
+  smoothSS <- Tps(oneAPAngle[,c("posX","posY")], oneAPAngle$avgSignal)
+  vizSmooth <- predictSurface(smoothSS)
+  plot.surface(vizSmooth,type = "C", main=paste("AP: ",m,"Angle:",a))
+  points(oneAPAngle$posX, oneAPAngle$posY, pch=19, cex = 0.5)
+}
+
+
+
+```
+
+
+
+```{r ContinuationSSMultiple}
+parcur <- par(mfrow=c(7,3), mar = rep(1,4))
+mapply(surfaceSS,m = subMacs[ rep(c(1,2,3,4,5,6,7), each=3)], 
+       a= rep(c(0,90,135), each=1),
+       d = list(data=offlineSummary))
+#rep(c(0,135),2)
+```
+Use the previous chart to define the X and Y positions for the APs using the floor plan
+```{r}
+#Create the matrix with the X and Y Positions for all the APs
+
+AP = matrix( c( 7.5, 6.3, 6.5, 7.6, 2.5, -.8, 12.8, -2.8,
+1, 14, 33.5, 9.3, 33.5, 2.8),
+ncol = 2, byrow = TRUE,
+dimnames = list(subMacs, c("x", "y") ))
+diffs <- offlineSummary[,c("posX","posY")] - AP[offlineSummary$mac,]
+offlineSummary$dist <-  sqrt(diffs[,1]^2 + diffs[,2]^2)
+xyplot(signal~dist | factor(mac) + factor(angle), data=offlineSummary, pch =19, cex =0.3,xlab="Distance")
+
+
+
+```
+####
+####  SAMANTHA & SOLANGE SECTIONS - 
+###      1. UPLOAD ONLINE DATA
+###      2. CLEAN AND PREPARE ONLINE DATA
+###      3. IDENTIFY SUBSETS - ONLINE AND OFFLINE DATA (TRAIN DATA)
+###      4. IDENTIFY NEAREST NEIGHBORS
+###      5. PREDICTION - tbd
+###
+
+
+```{r}
+
+
+
+online <- readLines("Data/online.final.trace.txt")
+
+#rawTxt <- readLines("Data/offline.final.trace.txt")
+
+```
+
+
+
+```{r}
+
+tokens=strsplit(online[4],"[;=,]")[[1]]
+tokens[1:10]
+tokens[c(2,4,6:8,10)]
+
+tokens[-(1:10)]
+
+tmpMat= matrix(tokens[-(1:10)], ncol=4, byrow = TRUE)
+
+matrix_rec = cbind(matrix(tokens[c(2,4,6:8,10)],nrow=nrow(tmpMat),ncol=6, byrow=TRUE),tmpMat)
+
+
+
+```
+
+```{r}
+
+processLine = function(x){
+  tokens=strsplit(x,"[;=,]")[[1]]
+  if (length(tokens) == 10)
+    return(NULL)
+  tmpMat= matrix(tokens[-(1:10)], ncol=4, byrow = TRUE)
+  cbind(matrix(tokens[c(2,4,6:8,10)],nrow=nrow(tmpMat),ncol=6, byrow=TRUE),tmpMat)
+  
+}
+
+
+```
+
+
+
+```{r processAllData}
+
+# Get the number of lines that do not start with '#'
+
+options(error = recover, warn=2)
+
+linesToProcess <- online[ substr(online,1,1) != "#"]
+
+
+#Apply processLine function to all lines
+tmpResult_on = lapply(linesToProcess, processLine)
+
+
+#Append final data
+onlineData <- as.data.frame(do.call("rbind",tmpResult_on))
+
+head(onlineData)
+
+
+
+```
+
+## Cleaning the Data
+```{r dataCleaning}
+
+
+#Name the columns of the dataset onlineData
+
+names(onlineData) <- c("time","scanMac","posX","posY","posZ","orientation"
+                        ,"mac","signal", "channel","type")
+head(onlineData)
+
+```
+
+
+```{r setVariablesType}
+
+# set the variable types - mac address is changed to character in onlineData structure
+
+onlineData$mac <- as.character(onlineData$mac)
+
+numericVar <- c("time", "posX","posY","posZ","orientation","signal")
+
+onlineData[,numericVar] <- as.data.frame(apply(onlineData[,numericVar],2, as.numeric))
+
+head(onlineData)
+
+unique(onlineData$mac)
+
+str(onlineData)
+nrow(onlineData)
+
+```
+The 'remMacAddress' variable will have the mac address that needs to be removed from both offline and online data
+```{r}
+
+# This is the mac address to remove.
+remMacAddress = "All"
+
+
+
+```
+
+
+
+```{r}
+
+## Need to eliminate records in onlineData that have least number of observations for the Sub mac addresses 
+
+
+subMacs_on <-  names(sort(table(onlineData$mac), decreasing=TRUE))[1:7]
+head(subMacs_on)
+
+
+# Remove one mac address
+# Per the case study project rubric:  "... and the decision was made to keep the access point with MAC address 00:0f:a3:39:e1:c0 and to eliminate the data corresponding to MAC address 00:0f:a3:39:dd:cd. 
+
+subMacs_on <- subMacs_on[subMacs_on != remMacAddress]
+table(subMacs_on)
+
+
+## Subset of online data with only 7 mac addresses:
+
+
+onlineData_Sub <- onlineData[onlineData$mac %in% subMacs_on,]
+
+head(onlineData_Sub)
+
+unique(onlineData_Sub$mac)
+
+table(onlineData_Sub$mac)
+
+
+```
+
+```{r}
+
+# creating the unique location identifiers in the onlineData_Sub data set
+
+
+onlineData_Sub$posXY = paste(onlineData_Sub$posX, onlineData_Sub$posY, sep = "-")
+
+head(onlineData_Sub)
+
+length(unique(onlineData_Sub$posXY))
+
+
+```
+
+
+
+```{r addAngles}
+
+
+#add the angles column by using roundOrientation function
+
+onlineData_Sub$angle <- roundOrientation(onlineData_Sub$orientation)
+
+onlineData_Sub
+
+```
+
+
+```{r}
+
+
+#Tally the number of signal strengths recorded at each location - Table - angle vs posYX
+
+tabonlineXYA = table(onlineData_Sub$posXY, onlineData_Sub$angle)
+
+tabonlineXYA[1:8, ]
+
+ ##"00:0f:a3:39:dd:cd"
+ 
+```
+
+
+
+
+```{r}
+#Change data structure and summarize each mac address with average of signal strengths 
+
+keepVars = c("posXY", "posX","posY", "orientation", "angle")
+
+byLoc = with(onlineData_Sub, by(onlineData_Sub, list(posXY),
+                                function(x) {
+                                
+                                ans = x[1, keepVars]
+                                avgSS = tapply(x$signal, x$mac, mean)
+                                y = matrix(
+                                avgSS,
+                                nrow = 1,
+                                ncol = 7,
+                                dimnames = list(ans$posXY, names(avgSS)))
+                                cbind(ans, y)
+                                }))
+
+
+onlineSummary = do.call("rbind", byLoc)
+
+dim(onlineSummary)
+names(onlineSummary)
+
+```
+
+
+
+```{r}
+#Online data new summary structure with signal strength averages by mac address
+
+onlineSummary
+
+
+```
+
+Here we remove the mac address for the Offline data.
+```{r}
+# Remove 7th mac from offline data set
+
+
+
+subMacs_off <-  names(sort(table(offlineSummary$mac), decreasing=TRUE))[1:7]
+subMacs_off <-  subMacs_off[subMacs_off != remMacAddress]
+
+table(subMacs_off)
+
+
+offlineSum <- offlineSummary[offlineSummary$mac %in% subMacs_off,]
+
+# offlineSum is the variable to use that does not contain the AP above.
+```
+
+
+```{r}
+
+#Creating data structure similar to onlineSummary with a helper function called reshapeSS
+
+reshapeSS = function(data, varSignal = "signal", keepVars = c("posXY", "posX", "posY", "orientation", "angle")) {
+byLocation =
+with(data, by(data, list(posXY),
+function(x) {
+ans = x[1, keepVars]
+avgSS = tapply(x[ , varSignal ], x$mac, mean)
+y = matrix(avgSS, nrow = 1, ncol = 7,
+dimnames = list(ans$posXY,
+names(avgSS)))
+cbind(ans, y)
+}))
+newDataSS = do.call("rbind", byLocation)
+return(newDataSS)
+}
+
+
+
+```
+
+
+
+
+```{r}
+
+#train reshapeSS
+
+reshapeSStrain = function(data, varSignal = "signal", keepVars = c("posXY", "posX", "posY")) {
+byLocation = with(data, by(data, list(posXY),
+      function(x) {
+      ans = x[1, keepVars]
+      avgSS = tapply(x[ , varSignal ], x$mac, mean)
+      y = matrix(avgSS, nrow = 1, ncol = 7,
+      dimnames = list(ans$posXY,
+      names(avgSS)))
+      cbind(ans, y)
+      }))
+newDataSS = do.call("rbind", byLocation)
+return(newDataSS)
+}
+
+
+
+```
+
+
+```{r}
+## The function includes the seletion of the angles.
+
+
+selectTrain = function(angleNewObs, signals, m)
+
+{
+  refs = seq(0, by = 45, length = 8)
+  nearestAngle = roundOrientation(angleNewObs)
+
+  if (m %% 2 == 1) {
+    angles = seq(-45 * (m - 1) / 2, 45 * (m - 1) / 2, length = m)
+  } else {
+    m = m + 1
+    angles = seq(-45 * (m - 1) / 2, 45 * (m - 1) / 2, length = m)
+  if (sign(angleNewObs - nearestAngle) > -1)
+    angles = angles[-1]
+  else
+    angles = angles[-m]
+  }
+  #print(angles)
+  angles = nearestAngle + angles
+  angles[angles < 0] = angles[angles < 0] + 360
+  angles[angles > 360] = angles[angles > 360] - 360
+  angles = sort(angles)
+  #print(angles)
+  offlineSubset = signals[signals$angle %in% angles,]
+  
+  trainSS = reshapeSStrain(offlineSubset, varSignal = "avgSignal")
+  
+ return(trainSS)}
+
+
+
+```
+
+
+```{r}
+
+#Test if the selectTrain function works for all angles. 
+train130 = selectTrain(90, offlineSum, m = 3)
+
+
+```
+
+
+```{r}
+
+#Find nearest neighbors
+
+findNN = function(newSignal, trainSubset) {
+  diffs = apply(trainSubset[ , 4:10], 1,
+    function(x) x - newSignal)
+  dists = apply(diffs, 2, function(x) sqrt(sum(x^2)) )
+  closest = order(dists)
+  return(trainSubset[closest, 1:3 ])
+}
+
+```
+
+
+
+```{r}
+
+#Find nearest neighbors
+
+findwNN = function(newSignal, trainSubset) {
+diffs = apply(trainSubset[ , 4:10], 1,
+  function(x) x - newSignal)
+dists = apply(diffs, 2, function(x) sqrt(sum(x^2)) )
+invdists = apply(diffs, 2, function(x) 1/sqrt(sum(x^2)) )
+wDistSum=sum(invdists)
+#print(invdists)
+wDist =invdists/wDistSum
+#print(wDistSum)
+closest = order(dists)
+#print(closest)
+return(list(trainSubset[closest, 1:3 ], invdists[order(wDist, decreasing = TRUE)]))
+}
+
+```
+
+```{r}
+
+#this Uses Regular Distance
+
+
+predXY = function(newSignals, newAngles, trainData,
+  numAngles = 1, k = 3){
+  closeXY = list(length = nrow(newSignals))
+  
+  for (i in 1:nrow(newSignals)) {
+    #print(newAngles[i])
+     trainSS = selectTrain(newAngles[i], trainData, m = numAngles)
+   
+    closeXY[[i]] =
+      findNN(newSignal = as.numeric(newSignals[i, ]), trainSS)
+    
+    
+  }
+    estXY = lapply(closeXY, function(x) sapply(x[ , 2:3],
+                                        function(x) mean(x[1:k])))
+  estXY = do.call("rbind", estXY)
+  return(estXY)
+}
+
+
+```
+
+```{r}
+
+#this Uses Weighted Distance
+
+
+predWXY = function(newSignals, newAngles, trainData,
+  numAngles = 1, k = 3){
+  closeXY = list(length = nrow(newSignals))
+  invDist = list(length = nrow(newSignals))
+  
+  for (i in 1:nrow(newSignals)) {
+    #print(newAngles[i])
+     trainSS = selectTrain(newAngles[i], trainData, m = numAngles)
+   
+    closeXY[[i]] =
+      findwNN(newSignal = as.numeric(newSignals[i, ]), trainSS)[[1]]
+    invDist[[i]] =
+      findwNN(newSignal = as.numeric(newSignals[i, ]), trainSS)[[2]]
+    
+    
+    
+  }
+  
+  #print(invDist)
+  
+  #calcuate the Distance Weight for the Top K N
+  distWList = list(length = length(invDist))
+  for (i in 1:length(invDist)){
+    
+    distWeight = list(length=k)
+    for (j in 1:k) {
+      distWeight[j]=invDist[[i]][j] /sum(invDist[[i]][1:k])
+    }
+    distWList[[i]]=distWeight
+  }
+   #print(distWList)
+  wXYFactor = list(length(closeXY))
+  
+  #multiply the weights
+  
+  for (i in 1:length(closeXY)){
+    wXYFactor[[i]]=as.matrix(closeXY[[i]][1:k,2:3] * unlist(distWList[[i]]))
+  }
+  #print(wXYFactor)
+   
+  estXY = lapply(wXYFactor, function(x) apply(x, 2,
+                                    function(x) sum(x)))
+  estXY = do.call("rbind", estXY)
+  return(estXY)
+}
+
+
+```
+
+
+
+```{r}
+
+## Error Cacluation Function
+
+calcError =
+function(estXY, actualXY)
+sum( rowSums( (estXY - actualXY)^2) )
+
+```
+
+
+
+
+
+```{r}
+
+v = 11
+permuteLocs = sample(unique(offlineSum$posXY))
+permuteLocs = matrix(permuteLocs, ncol = v,
+nrow = floor(length(permuteLocs)/v))
+
+
+#permuteLocs2 = sample(unique((onlineSummary$posXY)))
+#permuteLocs2 = matrix(permuteLocs2, ncol = v,
+#nrow = floor(length(permuteLocs2)/v))
+
+#permuteLocs
+
+
+```
+
+
+
+
+
+```{r}
+
+
+reshapeSS = function(data,  varSignal = "signal", keepVars = c("posXY", "posX","posY", "orientation", "angle"), sampleAngle = FALSE) {
+  refs = seq(0, by = 45, length = 8)
+  byLocation = with(data, by(data, list(posXY),
+              function(x) {
+                    if (sampleAngle) x = x[x$angle == sample(refs, size = 1), ]
+                      ans = x[1, keepVars]
+                      avgSS = tapply(x[ , varSignal ], x$mac, mean)
+                      y = matrix(avgSS, nrow = 1, ncol = 7,
+                      dimnames = list(ans$posXY, names(avgSS)))
+                      cbind(ans, y)
+              }))
+newDataSS = do.call("rbind", byLocation)
+return(newDataSS)
+}
+
+```
+
+
+This sets the simulated online data using the offline data.
+```{r}
+
+onlineCVSummary = reshapeSS(offlineSum, keepVars = keepVars,
+                      sampleAngle = TRUE)
+
+
+
+```
+
+
+
+
+## This code does not include the 00:0f:a3:39:dd:cd mac address.
+
+This XY Calculation uses relgular distances
+```{r}
+
+## This code does not include the 00:0f:a3:39:dd:cd mac address 
+
+K = 20 
+err = rep(0, K)
+
+dim(permuteLocs)
+
+for (j in 1:v) { 
+  onlineFold  = subset(onlineCVSummary,  posXY %in% permuteLocs[ , j]) 
+  offlineFold = subset(offlineSum, posXY %in% permuteLocs[ , -j]) 
+  actualFold = onlineFold[ , c("posX", "posY")]
+  for (k in 1:K) { 
+    estFold = predXY(newSignals = onlineFold[ , 6:12], 
+                     newAngles = onlineFold[ , 5], 
+                     offlineFold, numAngles = 3, k = k) 
+    err[k] = err[k] + calcError(estFold, actualFold) 
+    }
+}
+
+```
+### Plot of the SSE for the Cross Validataion 
+```{r}
+MinErr=min(err)
+minK=which(err==MinErr)[1]
+plot(err, type="l", xlab = "K value (#Nbrs) \n All Top AP included", ylab ="Cross Validation Error")
+title("Error Values for k values from 1 to 20 Unweighted Scenario")
+
+text(x = minK - 2, y = MinErr + 40, 
+     label = as.character(round(MinErr)), col = grey(0.4))
+err
+```
+
+This XY Calculation uses Weighted distances
+```{r}
+
+## This code does not include the 00:0f:a3:39:dd:cd mac address 
+
+K = 20 
+errW = rep(0, K)
+
+dim(permuteLocs)
+
+for (j in 1:v) { 
+  onlineFold  = subset(onlineCVSummary,  posXY %in% permuteLocs[ , j]) 
+  offlineFold = subset(offlineSum, posXY %in% permuteLocs[ , -j]) 
+  actualFold = onlineFold[ , c("posX", "posY")]
+  for (k in 1:K) { 
+    estFold = predWXY(newSignals = onlineFold[ , 6:12], 
+                     newAngles = onlineFold[ , 5], 
+                     offlineFold, numAngles = 3, k = k) 
+    errW[k] = errW[k] + calcError(estFold, actualFold) 
+    }
+}
+
+```
+### Plot of the SSE for the Cross Validataion 
+```{r}
+MinErr=min(errW)
+minK=which(errW==MinErr)[1]
+plot(errW, type="l", xlab = "K value (#Nbrs) \n All Top AP included", ylab ="Cross Validation Error")
+title("Error Values for k values from 1 to 20 weighted Scenario")
+text(x = minK - 2, y = MinErr + 40, 
+     label = as.character(round(MinErr)), col = grey(0.4))
+err
+
+```
+```
+
+
+
