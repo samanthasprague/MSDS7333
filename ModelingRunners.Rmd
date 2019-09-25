@@ -1,6 +1,6 @@
 ---
 title: "Modeling Runners"
-author: "Eduardo Cantu Medellin"
+author: "Eduardo Cantu Medellin, Samantha Sprague, Solange Garcia de Alford"
 date: "September 19, 2019"
 output: html_document
 ---
